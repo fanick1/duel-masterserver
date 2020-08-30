@@ -103,7 +103,7 @@ namespace masterserver {
 
     template<typename Stream, typename T>
     bool serialize(Stream &stream, T &t) {
-        if (Stream::isDeserializer()) {
+        if constexpr (Stream::isDeserializer()) {
             return read(stream, t);
         } else {
             return write(stream, t);
@@ -185,10 +185,6 @@ namespace masterserver {
         constexpr static bool isDeserializer() {
             return false;
         }
-        bool read(unsigned char *dst, size_t len) {
-            // no op
-            return false;
-        }
     };
 
     struct deserializer {
@@ -221,10 +217,6 @@ namespace masterserver {
         }
         constexpr static bool isDeserializer() {
             return true;
-        }
-        bool write(unsigned char *dst, size_t len) {
-            // no op
-            return false;
         }
     };
 }
