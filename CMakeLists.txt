@@ -41,7 +41,6 @@ endif (MSVC)
 if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -ggdb3 -D_FORTIFY_SOURCE=2 -std=c++17")
     if (D6R_PLATFORM STREQUAL "x86")
-
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpmath=sse -msse2")
     elseif (D6R_PLATFORM STREQUAL "arm")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfloat-abi=hard -mlittle-endian -munaligned-access")
@@ -52,12 +51,16 @@ endif (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 if (MINGW)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -mwindows -static-libgcc -static-libstdc++")
 endif (MINGW)
-
+set (D6R_COMMON
+	include/protocol.cpp
+	)
 set (D6R_SOURCES
 	source/main.cpp
+	${D6R_COMMON}
 	)
 set (D6R_TEST_SOURCES
 	source/test.cpp
+	${D6R_COMMON}
 	)
 set(D6R_APP_NAME "duel6r-masterserver" CACHE STRING "Filename of the application.")
 set(D6R_APP_DEBUG_NAME "duel6rd-masterserver" CACHE STRING "Filename of the debug version of the application.")

@@ -14,13 +14,13 @@ std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
 
 entryMap hostList;
 
-void addNATPeer(ENetPeer *peer, address_t address, port_t port) {
+void addNATPeer(ENetPeer *peer, address_t address, port_t port, address_t clientLocalNetworkAddress, port_t clientLocalNetworkPort) {
     if (!hostList.has(address, port)) {
         printf("The NAT punch request refers to unknown server %s !\n", hostToIPaddress(address, port).c_str());
         return;
     }
     server_list_entry &e = hostList.get(address, port);
-    e.registerNatClient(peer->address.host, peer->address.port);
+    e.registerNatClient(peer->address.host, peer->address.port, clientLocalNetworkAddress, clientLocalNetworkPort);
 }
 
 void sendWaitingNATPeersToServer(ENetPeer *server) {
@@ -36,6 +36,8 @@ void sendWaitingNATPeersToServer(ENetPeer *server) {
         packet_nat_peers::_peer peer;
         peer.address = std::get<0>(c);
         peer.port = std::get<1>(c);
+        peer.localNetworkAddress = std::get<2>(c);
+        peer.localNetworkPort = std::get<3>(c);
         p.peers.push_back(peer);
     }
     p.peerCount = p.peers.size();
@@ -64,6 +66,11 @@ void sendHostsToPeer(ENetPeer *peer) {
         packet_serverlist::_serverlist_server server;
         server.address = e->address;
         server.port = e->port;
+        server.localNetworkAddress = e->localNetworkAddress;
+        server.localNetworkPort = e->localNetworkPort;
+        server.publicIPAddress = e->publicIPAddress;
+        server.publicPort = e->publicPort;
+        server.needsNAT = e->needsNAT;
         server.descr = e->descr;
         p.servers.push_back(server);
     }
@@ -81,10 +88,18 @@ void onPacketReceived(ENetPeer *peer, ENetPacket *p) {
 
     switch (header.type) {
         case PACKET_TYPE::SERVER_UPDATE: {
-            printf("It's a server update!\n");
+            printf("server %s: update ", hostToIPaddress(peer->address.host, peer->address.port).c_str());
             packet_update s;
             d >> s;
-            hostList.updateDescr(peer->address.host, peer->address.port, s.descr);
+            printf("server %s: update `%s` %s\n", hostToIPaddress(peer->address.host, peer->address.port).c_str(), s.descr.c_str(), hostToIPaddress(s.localNetworkAddress, s.localNetworkPort).c_str());
+            if(s.descr.length() > 100){
+                s.descr = "long PP";
+            }
+            hostList.update(peer->address.host, peer->address.port,
+                s.descr,
+                s.localNetworkAddress, s.localNetworkPort,
+                s.publicIPAddress, s.publicPort,
+                s.needsNAT);
             break;
         }
         default:
@@ -101,7 +116,7 @@ void onPeerPacketReceived(ENetPeer *peer, ENetPacket *p) {
             printf("It's a NAT punch request!\n");
             packet_nat_punch s;
             d >> s;
-            addNATPeer(peer, s.address, s.port);
+            addNATPeer(peer, s.address, s.port, s.clientLocalNetworkAddress, s.clientLocalNetworkPort);
             enet_peer_disconnect_later(peer, 0);
             break;
         }
@@ -111,15 +126,30 @@ void onPeerPacketReceived(ENetPeer *peer, ENetPacket *p) {
     }
 }
 
-int main() {
+int main(int argc, char *argv[]) {
     ENetAddress address;
+    address.host = ENET_HOST_ANY;
+    address.port = 5902;
+
+    if (argc > 1) {
+        std::string addressStr = std::string(argv[1]);
+        enet_address_set_host(&address, addressStr.c_str());
+    }
+
+    if (argc > 2) {
+        std::string portStr = std::string(argv[2]);
+        address.port = std::stoi(portStr);
+    }
+
     ENetHost *server;
     /* Bind the server to the default localhost.     */
     /* A specific host address can be specified by   */
     /* enet_address_set_host (& address, "x.x.x.x"); */
-    address.host = ENET_HOST_ANY;
+
+
+
     /* Bind the server to port 1234. */
-    address.port = 5902;
+
     server = enet_host_create(&address /* the address to bind the server host to */,
         32 /* allow up to 32 clients and/or outgoing connections */,
         1 /* allow up to 2 channels to be used, 0 and 1 */,
@@ -131,6 +161,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    std::cout << "Master local address: " << hostToIPaddress(server->address.host, server->address.port) << "\n";
     ENetEvent event;
 
     for (;;) {
@@ -158,14 +189,14 @@ int main() {
                     }
                     switch (rt) {
                         case REQUEST_TYPE::SERVER_REGISTER: {
-                            printf("server %s connected \n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
+                            printf("server %s connected\n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
                             event.peer->data = (void*) new peer_entry(PEER_MODE::SERVER, now + std::chrono::seconds(5));
                             hostList.refresh(event.peer->address.host, event.peer->address.port);
                             enet_peer_disconnect(event.peer, 0);
                             break;
                         }
                         case REQUEST_TYPE::SERVER_UPDATE: {
-                            printf("server %s connected \n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
+                            printf("server %s connected [update]\n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
                             event.peer->data = (void*) new peer_entry(PEER_MODE::SERVER, now + std::chrono::seconds(5));
                             hostList.refresh(event.peer->address.host, event.peer->address.port);
                             break;

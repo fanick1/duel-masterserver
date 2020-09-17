@@ -46,6 +46,9 @@ namespace masterserver {
     template<typename Stream>
     bool operator >>(Stream &s, std::string &t) {
         uint32_t size = readSize(s);
+        if(size > 255){
+            return false;
+        }
         t.reserve(size);
         unsigned char data[size + 1] = { 0 };
         s.read(data, size);
@@ -76,7 +79,9 @@ namespace masterserver {
     template<typename Stream, typename T>
     bool operator >>(Stream &s, std::vector<T> &t) {
         uint32_t size = readSize(s);
-
+        if(size > 1000){
+            return false;
+        }
         t.clear();
         t.reserve(size);
         for (size_t i = 0; i < size; i++) {

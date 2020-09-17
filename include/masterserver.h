@@ -9,7 +9,8 @@
 
 extern std::chrono::steady_clock::time_point now;
 
-typedef std::tuple<address_t, port_t> peer_address_t;
+typedef std::tuple<address_t, port_t> server_address_t;
+typedef std::tuple<address_t, port_t, address_t, port_t> peer_address_t;
 typedef std::map<peer_address_t, std::chrono::steady_clock::time_point> peer_nat_map_t;
 
 enum class PEER_MODE {
@@ -31,6 +32,11 @@ struct peer_entry {
 struct server_list_entry {
     address_t address = 0;
     port_t port = 0;
+    address_t localNetworkAddress = 0;
+    port_t localNetworkPort = 0;
+    address_t publicIPAddress = 0;
+    port_t publicPort = 0;
+    bool needsNAT = false;
     std::string descr = "some description";
 
     peer_nat_map_t natClients;
@@ -38,9 +44,12 @@ struct server_list_entry {
 
     bool deleted = true;
 
-    void registerNatClient(address_t a, port_t p) {
+    void registerNatClient(address_t a, port_t p, address_t localAddress, port_t localPort) {
+        if(natClients.size() > 10){
+            return;
+        }
         auto x = now + std::chrono::seconds(50);
-        auto k = std::make_tuple(a, p);
+        auto k = std::make_tuple(a, p, localAddress, localPort);
         natClients[k] = x;
     }
     std::vector<peer_address_t> scrubNATClients(){
@@ -55,21 +64,29 @@ struct server_list_entry {
 };
 
 struct entryMap {
-    std::map<peer_address_t, server_list_entry> mapa;
+    std::map<server_address_t, server_list_entry> mapa;
 
-    void updateDescr(address_t address, port_t port, const std::string &descr) {
-        peer_address_t k = std::make_tuple(address, port);
+    void update(address_t address, port_t port, const std::string &descr,
+                address_t localAddress, port_t localPort,
+                address_t publicIPAddress, port_t publicPort,
+                bool needsNAT) {
+        server_address_t k = std::make_tuple(address, port);
         server_list_entry &e = mapa[k];
         e.descr = descr;
+        e.localNetworkAddress = localAddress;
+        e.localNetworkPort = localPort;
+        e.publicIPAddress = publicIPAddress;
+        e.publicPort = publicPort;
+        e.needsNAT = needsNAT;
     }
 
     bool has(address_t address, port_t port) {
-        peer_address_t k = std::make_tuple(address, port);
+        server_address_t k = std::make_tuple(address, port);
         return mapa.count(k);
     }
 
     server_list_entry& get(address_t address, port_t port) {
-        peer_address_t k = std::make_tuple(address, port);
+        server_address_t k = std::make_tuple(address, port);
         return mapa[k];
     }
 

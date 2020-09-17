@@ -27,6 +27,8 @@ enum class REQUEST_TYPE {
 
     SERVER_NAT_GET_PEERS, //server scrubbing peers wanting to be NAT punched
     CLIENT_NAT_CONNECT_TO_SERVER, // peer requests NAT punch through to given server, this peer is registered as waiting to be scrapped by the server, CLIENT_NAT_PUNCH packet is expected
+
+    GAME_CONNECTION, // temporary workaround
     COUNT
 };
 
@@ -50,9 +52,19 @@ struct packetHeader {
 
 struct packet_update {
     std::string descr;
+    address_t localNetworkAddress = 0;
+    port_t localNetworkPort = 0;
+    address_t publicIPAddress = 0;
+    port_t publicPort = 0;
+    bool needsNAT = false;
     template<typename Stream>
     bool serialize(Stream &s) {
-        return s & descr;
+        return s & descr
+            && s & localNetworkAddress
+            && s & localNetworkPort
+            && s & publicIPAddress
+            && s & publicPort
+            && s & needsNAT;
     }
 };
 
@@ -60,13 +72,23 @@ struct packet_serverlist {
     struct _serverlist_server {
         address_t address = 0;
         port_t port = 0;
+        address_t localNetworkAddress = 0;
+        port_t localNetworkPort = 0;
+        address_t publicIPAddress = 0;
+        port_t publicPort = 0;
         std::string descr;
+        bool needsNAT = false;
 
         template<typename Stream>
         bool serialize(Stream &s) {
             return s & address // @suppress("Suggested parenthesis around expression")
                 && s & port
-                && s & descr;
+                && s & localNetworkAddress
+                && s & localNetworkPort
+                && s & publicIPAddress
+                && s & publicPort
+                && s & descr
+                && s & needsNAT;
         }
     };
 
@@ -81,13 +103,17 @@ struct packet_serverlist {
 };
 
 struct packet_nat_punch {
-    // address of the server - must match some server stored in the list, otherwise this packet will not have any effect.
+    // address of the server - must match some server stored in the list, otherwise this packet will have no effect.
     address_t address = 0;
     port_t port = 0;
+    address_t clientLocalNetworkAddress = 0;
+    port_t clientLocalNetworkPort = 0;
     template<typename Stream>
     bool serialize(Stream &s) {
         return s & address
-            && s & port;
+            && s & port
+            && s & clientLocalNetworkAddress
+            && s & clientLocalNetworkPort;
     }
 };
 
@@ -95,10 +121,14 @@ struct packet_nat_peers {
     struct _peer {
         address_t address = 0;
         port_t port = 0;
+        address_t localNetworkAddress = 0;
+        port_t localNetworkPort = 0;
         template<typename Stream>
         bool serialize(Stream &s) {
             return s & address
-                && s & port;
+                && s & port
+                && s & localNetworkAddress
+                && s & localNetworkPort;
         }
     };
 
@@ -115,22 +145,6 @@ union hostAddress {
     address_t address;
     uint8_t a[4];
 };
-
-std::string hostToIPaddress(address_t a, port_t p){
-    std::ostringstream is;
-    hostAddress hostAddress;
-    hostAddress.address = a;
-
-    is << (uint16_t) hostAddress.a[0];
-    is << ".";
-    is << (uint16_t) hostAddress.a[1];
-    is << ".";
-    is << (uint16_t) hostAddress.a[2];
-    is << ".";
-    is << (uint16_t) hostAddress.a[3];
-    is << ":";
-    is << p;
-    return is.str();
-}
-
+std::string addressToStr(address_t a);
+std::string hostToIPaddress(address_t a, port_t p);
 #endif /* INCLUDE_PROTOCOL_H_ */
