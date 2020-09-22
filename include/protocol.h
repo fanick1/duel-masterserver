@@ -29,6 +29,8 @@ enum class REQUEST_TYPE {
     CLIENT_NAT_CONNECT_TO_SERVER, // peer requests NAT punch through to given server, this peer is registered as waiting to be scrapped by the server, CLIENT_NAT_PUNCH packet is expected
 
     GAME_CONNECTION, // temporary workaround
+
+    MASTER_PUSH_NAT_PEERS_TO_SERVER, // experimental - master server will call back to the server and push any peers requesting connection through the NAT
     COUNT
 };
 
@@ -132,11 +134,16 @@ struct packet_nat_peers {
         }
     };
 
+    address_t yourPublicAddress;
+    port_t yourPublicPort;
+
     uint16_t peerCount = 0;
     std::vector<_peer> peers;
     template<typename Stream>
     bool serialize(Stream &s) {
-        return s & peerCount
+        return s & yourPublicAddress
+            && s & yourPublicPort
+            && s & peerCount
             && s & peers;
     }
 };

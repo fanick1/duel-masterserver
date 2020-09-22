@@ -11,8 +11,13 @@
 #include "../include/masterserver.h"
 
 std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+ENetHost *server;
 
 entryMap hostList;
+
+void sendWaitingNATPeersToServer(ENetPeer *server);
+
+void pushNATPeersToServer(server_list_entry &e);
 
 void addNATPeer(ENetPeer *peer, address_t address, port_t port, address_t clientLocalNetworkAddress, port_t clientLocalNetworkPort) {
     if (!hostList.has(address, port)) {
@@ -20,7 +25,28 @@ void addNATPeer(ENetPeer *peer, address_t address, port_t port, address_t client
         return;
     }
     server_list_entry &e = hostList.get(address, port);
+    if (!e.needsNAT) {
+        // should not happen
+        printf("server does not support NAT punch\n");
+        return;
+    }
     e.registerNatClient(peer->address.host, peer->address.port, clientLocalNetworkAddress, clientLocalNetworkPort);
+    pushNATPeersToServer(e);
+}
+
+void pushNATPeersToServer(server_list_entry &e) {
+    printf("Pushing peers back to the server ... connecting\n");
+    ENetAddress address;
+    address.host = e.address;
+    address.port = e.port;
+    ENetPeer *peer = enet_host_connect(server, &address, 1, static_cast<enet_uint32>(REQUEST_TYPE::MASTER_PUSH_NAT_PEERS_TO_SERVER));
+    enet_peer_timeout(peer, 100, 100, 1000);
+    peer_entry *pe = new peer_entry(PEER_MODE::MASTER_TO_SERVER, now + std::chrono::seconds(2));
+    peer->data = (void*) pe;
+    pe->connectedCallback = [](ENetPeer *peer) {
+        printf("Pushing peers back to the server ... connected\n");
+        sendWaitingNATPeersToServer(peer);
+    };
 }
 
 void sendWaitingNATPeersToServer(ENetPeer *server) {
@@ -31,6 +57,9 @@ void sendWaitingNATPeersToServer(ENetPeer *server) {
     s << header;
 
     packet_nat_peers p;
+    p.yourPublicAddress = e.publicIPAddress != 0 ? e.publicIPAddress : e.address;
+    p.yourPublicPort = e.publicPort != 0 ? e.publicPort : e.port;
+
     std::vector<peer_address_t> addresses = e.scrubNATClients();
     for (auto &c : addresses) {
         packet_nat_peers::_peer peer;
@@ -87,49 +116,53 @@ void onPacketReceived(ENetPeer *peer, ENetPacket *p) {
     d >> header;
 
     switch (header.type) {
-        case PACKET_TYPE::SERVER_UPDATE: {
-            printf("server %s: update ", hostToIPaddress(peer->address.host, peer->address.port).c_str());
-            packet_update s;
-            d >> s;
-            printf("server %s: update `%s` %s\n", hostToIPaddress(peer->address.host, peer->address.port).c_str(), s.descr.c_str(), hostToIPaddress(s.localNetworkAddress, s.localNetworkPort).c_str());
-            if(s.descr.length() > 100){
-                s.descr = "long PP";
-            }
-            hostList.update(peer->address.host, peer->address.port,
-                s.descr,
-                s.localNetworkAddress, s.localNetworkPort,
-                s.publicIPAddress, s.publicPort,
-                s.needsNAT);
-            break;
+    case PACKET_TYPE::SERVER_UPDATE: {
+        packet_update s;
+        d >> s;
+        printf("server %s: update `%s` %s/pub:%s\n",
+            hostToIPaddress(peer->address.host, peer->address.port).c_str(), s.descr.c_str(),
+            hostToIPaddress(s.localNetworkAddress, s.localNetworkPort).c_str(),
+            hostToIPaddress(s.publicIPAddress, s.publicPort).c_str());
+        if (s.descr.length() > 100) {
+            s.descr = "long PP";
         }
-        default:
-            break;
+        hostList.update(peer->address.host, peer->address.port,
+            s.descr,
+            s.localNetworkAddress, s.localNetworkPort,
+            s.publicIPAddress, s.publicPort,
+            s.needsNAT);
+        break;
+    }
+    default:
+        break;
     }
 }
+
 void onPeerPacketReceived(ENetPeer *peer, ENetPacket *p) {
     masterserver::deserializer d(p->data, p->dataLength);
     packetHeader header;
     d >> header;
 
     switch (header.type) {
-        case PACKET_TYPE::CLIENT_NAT_PUNCH: {
-            printf("It's a NAT punch request!\n");
-            packet_nat_punch s;
-            d >> s;
-            addNATPeer(peer, s.address, s.port, s.clientLocalNetworkAddress, s.clientLocalNetworkPort);
-            enet_peer_disconnect_later(peer, 0);
-            break;
-        }
+    case PACKET_TYPE::CLIENT_NAT_PUNCH: {
+        printf("It's a NAT punch request!\n");
+        packet_nat_punch s;
+        d >> s;
+        addNATPeer(peer, s.address, s.port, s.clientLocalNetworkAddress, s.clientLocalNetworkPort);
+        enet_peer_disconnect_later(peer, 0);
+        break;
+    }
 
-        default:
-            break;
+    default:
+        break;
     }
 }
-
+// usage: ./duel6t-masterserver 0.0.0.0 25900   <-- local port (default is 25900)
+//                                 ^--------------- local ip address
 int main(int argc, char *argv[]) {
     ENetAddress address;
     address.host = ENET_HOST_ANY;
-    address.port = 5902;
+    address.port = 25900; // use high value for the port (NAT traversal might not work with lower ports in netbox.cz network)
 
     if (argc > 1) {
         std::string addressStr = std::string(argv[1]);
@@ -141,18 +174,9 @@ int main(int argc, char *argv[]) {
         address.port = std::stoi(portStr);
     }
 
-    ENetHost *server;
-    /* Bind the server to the default localhost.     */
-    /* A specific host address can be specified by   */
-    /* enet_address_set_host (& address, "x.x.x.x"); */
-
-
-
-    /* Bind the server to port 1234. */
-
     server = enet_host_create(&address /* the address to bind the server host to */,
         32 /* allow up to 32 clients and/or outgoing connections */,
-        1 /* allow up to 2 channels to be used, 0 and 1 */,
+        1 /* allow up to 1 channels to be used, 0 */,
         0 /* assume any amount of incoming bandwidth */,
         0 /* assume any amount of outgoing bandwidth */);
     if (server == NULL)
@@ -177,86 +201,99 @@ int main(int argc, char *argv[]) {
 
         while (enet_host_service(server, &event, 100) > 0) {
             switch (event.type) {
-                case ENET_EVENT_TYPE_NONE:
-                    break;
-                case ENET_EVENT_TYPE_CONNECT: {
-                    REQUEST_TYPE rt = REQUEST_TYPE::NONE;
-                    if (event.data < static_cast<int>(REQUEST_TYPE::COUNT)) {
-                        rt = static_cast<REQUEST_TYPE>(event.data);
-                    } else {
-                        enet_peer_disconnect(event.peer, 255);
-                        continue;
-                    }
-                    switch (rt) {
-                        case REQUEST_TYPE::SERVER_REGISTER: {
-                            printf("server %s connected\n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
-                            event.peer->data = (void*) new peer_entry(PEER_MODE::SERVER, now + std::chrono::seconds(5));
-                            hostList.refresh(event.peer->address.host, event.peer->address.port);
-                            enet_peer_disconnect(event.peer, 0);
-                            break;
-                        }
-                        case REQUEST_TYPE::SERVER_UPDATE: {
-                            printf("server %s connected [update]\n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
-                            event.peer->data = (void*) new peer_entry(PEER_MODE::SERVER, now + std::chrono::seconds(5));
-                            hostList.refresh(event.peer->address.host, event.peer->address.port);
-                            break;
-                        }
-                        case REQUEST_TYPE::CLIENT_REQUEST_SERVERLIST: {
-                            printf("peer %s requesting server list \n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
-                            event.peer->data = (void*) new peer_entry(PEER_MODE::CLIENT, now + std::chrono::seconds(1));
-                            sendHostsToPeer(event.peer);
-                            enet_peer_disconnect_later(event.peer, 0);
-                            break;
-                        }
-                        case REQUEST_TYPE::SERVER_NAT_GET_PEERS: {
-                            printf("server %s requesting peers for NAT punch through \n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
-                            event.peer->data = (void*) new peer_entry(PEER_MODE::SERVER, now + std::chrono::seconds(5));
-                            hostList.refresh(event.peer->address.host, event.peer->address.port);
-                            sendWaitingNATPeersToServer(event.peer);
-                            enet_peer_disconnect_later(event.peer, 0);
-                            break;
-                        }
-                        case REQUEST_TYPE::CLIENT_NAT_CONNECT_TO_SERVER: {
-                            printf("peer %s requesting NAT punch\n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
-                            event.peer->data = (void*) new peer_entry(PEER_MODE::CLIENT, now + std::chrono::seconds(5));
-
-                            break;
-                        }
-
-                        case REQUEST_TYPE::NONE:
-                            case REQUEST_TYPE::COUNT:
-                            default:
-                            enet_peer_disconnect_later(event.peer, 0);
-                            break;
-                    }
-
+            case ENET_EVENT_TYPE_NONE:
+                break;
+            case ENET_EVENT_TYPE_CONNECT: {
+                REQUEST_TYPE rt = REQUEST_TYPE::NONE;
+                if (event.data < static_cast<int>(REQUEST_TYPE::COUNT)) {
+                    rt = static_cast<REQUEST_TYPE>(event.data);
+                } else {
+                    enet_peer_disconnect(event.peer, 255);
+                    continue;
+                }
+                switch (rt) {
+                case REQUEST_TYPE::SERVER_REGISTER: {
+                    printf("server %s connected\n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
+                    event.peer->data = (void*) new peer_entry(PEER_MODE::SERVER, now + std::chrono::seconds(5));
+                    hostList.refresh(event.peer->address.host, event.peer->address.port);
+                    enet_peer_disconnect(event.peer, 0);
                     break;
                 }
-                case ENET_EVENT_TYPE_DISCONNECT:
-                    delete ((peer_entry*) event.peer->data);
-                    event.peer->data = NULL;
+                case REQUEST_TYPE::SERVER_UPDATE: {
+                    printf("server %s connected [update]\n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
+                    event.peer->data = (void*) new peer_entry(PEER_MODE::SERVER, now + std::chrono::seconds(5));
+                    hostList.refresh(event.peer->address.host, event.peer->address.port);
                     break;
-                case ENET_EVENT_TYPE_RECEIVE:
+                }
+                case REQUEST_TYPE::CLIENT_REQUEST_SERVERLIST: {
+                    printf("peer %s requesting server list \n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
+                    event.peer->data = (void*) new peer_entry(PEER_MODE::CLIENT, now + std::chrono::seconds(1));
+                    sendHostsToPeer(event.peer);
+                    enet_peer_disconnect_later(event.peer, 0);
+                    break;
+                }
+                case REQUEST_TYPE::SERVER_NAT_GET_PEERS: {
+                    printf("server %s requesting peers for NAT punch through \n",
+                        hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
+                    event.peer->data = (void*) new peer_entry(PEER_MODE::SERVER, now + std::chrono::seconds(5));
+                    hostList.refresh(event.peer->address.host, event.peer->address.port, true);
+                    sendWaitingNATPeersToServer(event.peer);
+                    enet_peer_disconnect_later(event.peer, 0);
+                    break;
+                }
+                case REQUEST_TYPE::CLIENT_NAT_CONNECT_TO_SERVER: {
+                    printf("peer %s requesting NAT punch\n", hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
+                    event.peer->data = (void*) new peer_entry(PEER_MODE::CLIENT, now + std::chrono::seconds(5));
+                    break;
+                }
+
+                case REQUEST_TYPE::NONE:
+                // possibly outgoing request
+                if (event.peer->data != nullptr) {
                     peer_entry *pe = (peer_entry*) event.peer->data;
-                    switch (pe->mode) {
-                        case PEER_MODE::SERVER: {
-                            onPacketReceived(event.peer, event.packet);
-                            break;
-                        }
-                        case PEER_MODE::CLIENT: {
-                            onPeerPacketReceived(event.peer, event.packet);
-                            break;
-                        }
-                        case PEER_MODE::NONE: {
-                            break;
-                        }
+                    if (pe->mode == PEER_MODE::MASTER_TO_SERVER) {
+                        printf("server %s picked up connection to push peers waiting for NAT punch\n",
+                            hostToIPaddress(event.peer->address.host, event.peer->address.port).c_str());
+                        pe->onConnected(event.peer);
                     }
-                    /* Clean up the packet now that we're done using it. */
-                    enet_packet_destroy(event.packet);
+                }
+                //fall through
+                case REQUEST_TYPE::COUNT:
+
+                default:
+                enet_peer_disconnect_later(event.peer, 0);
                     break;
+                }
+
+                break;
+            }
+            case ENET_EVENT_TYPE_DISCONNECT:
+            delete ((peer_entry*) event.peer->data);
+            event.peer->data = NULL;
+                break;
+            case ENET_EVENT_TYPE_RECEIVE:
+            peer_entry *pe = (peer_entry*) event.peer->data;
+            switch (pe->mode) {
+            case PEER_MODE::NONE: {
+                break;
+            }
+            case PEER_MODE::SERVER: {
+                onPacketReceived(event.peer, event.packet);
+                break;
+            }
+            case PEER_MODE::CLIENT: {
+                onPeerPacketReceived(event.peer, event.packet);
+                break;
+            }
+            case PEER_MODE::MASTER_TO_SERVER: {
+                break;
+            }
+            }
+            /* Clean up the packet now that we're done using it. */
+            enet_packet_destroy(event.packet);
+                break;
             }
         }
-
     }
 
     return 0;

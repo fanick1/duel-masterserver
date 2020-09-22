@@ -1,3 +1,7 @@
+/**
+ * testing tool for the masterserver
+ */
+
 #include <iostream>
 #include <string>
 #include <cstdint>
@@ -26,7 +30,7 @@ void onPacketReceived(ENetPacket *p) {
             packet_serverlist s;
             d >> s;
             for (auto &server : s.servers) {
-                printf(" descr: %s , addr: %s, port: %u \n", server.descr.c_str(), hostToIPaddress(server.address, server.port).c_str());
+                printf(" descr: %s , addr: %s\n", server.descr.c_str(), hostToIPaddress(server.address, server.port).c_str());
             }
             break;
         }
@@ -136,8 +140,8 @@ int main(int argc, char *argv[]) {
     ENetEvent event;
     ENetPeer *peer;
 
-    enet_address_set_host(&address, "127.0.0.1");
-    address.port = 5902;
+    enet_address_set_host(&address, "127.0.0.1");  // <----   targetHost with the master server here
+    address.port = 25900;
 
     /** Testing code ahead - retry connection where more packets are actually sent for NAT punch */
     bool connected = false;
@@ -179,11 +183,11 @@ int main(int argc, char *argv[]) {
     }
     if (!connected) {
         enet_peer_reset(peer);
-        puts("Connection to 127.0.0.1:5902 failed.");
+        puts("Connection to 127.0.0.1:5902 failed."); //TODO reflect address and port
         return 1;
 
     }
-    puts("Connection to 127.0.0.1:5902 succeeded.");
+    puts("Connection to 127.0.0.1:5902 succeeded."); //TODO reflect address and port
     bool updateSent = false;
     bool testPacketSent = false;
     for (;;) {

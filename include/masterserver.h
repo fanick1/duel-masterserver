@@ -1,11 +1,14 @@
 #ifndef DUEL_MASTERSERVER_H
 #define DUEL_MASTERSERVER_H
+
 #include <tuple>
 #include <deque>
+#include <chrono>
+#include <functional>
+
 #include <enet/enet.h>
 #include "protocol.h"
 #include "serialize.h"
-#include <chrono>
 
 extern std::chrono::steady_clock::time_point now;
 
@@ -16,16 +19,22 @@ typedef std::map<peer_address_t, std::chrono::steady_clock::time_point> peer_nat
 enum class PEER_MODE {
     NONE,
     SERVER,
-    CLIENT
+    CLIENT,
+    MASTER_TO_SERVER
 };
 
 struct peer_entry {
     PEER_MODE mode = PEER_MODE::NONE;
     std::chrono::steady_clock::time_point validUntil;
-
+    std::function<void(ENetPeer *)> connectedCallback;
     peer_entry(PEER_MODE mode, std::chrono::steady_clock::time_point validUntil)
         : mode(mode),
           validUntil(validUntil) {
+    }
+    void onConnected(ENetPeer * peer){
+        if(connectedCallback){
+            connectedCallback(peer);
+        }
     }
 };
 
@@ -96,6 +105,12 @@ struct entryMap {
         e.deleted = false;
         e.address = address;
         e.port = port;
+    }
+
+    void refresh(address_t address, port_t port, bool nat) {
+        refresh(address, port);
+        server_list_entry &e = get(address, port);
+        e.needsNAT = nat;
     }
 
     void purgeOld() {
